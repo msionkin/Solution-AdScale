@@ -1,0 +1,74 @@
+@startuml
+!include https://raw.githubusercontent.com/plantuml-stdlib/C4-PlantUML/master/C4_Container.puml
+
+LAYOUT_WITH_LEGEND()
+
+title Data Architecture — AdScale (TO-BE, целевая, Database per Service)
+
+Person_Ext(dsp, "DSP-партнёр", "OpenRTB / HTTPS / JSON")
+Person(advertiser, "Рекламодатель", "Advertiser Dashboard")
+Person_Ext(endUser, "Пользователь сайта/приложения", "Смотрит баннер, кликает")
+
+Container(gateway, "API Gateway", "NGINX + Lua", "Аутентификация, rate limiting, circuit breaker")
+
+' ====================== Сервисы и их хранилища ======================
+System_Boundary(bidding_b, "Критичный путь (hot path)") {
+  Container(adServer, "Ad Server", "C++/Go", "Кандидаты, OpenRTB→внутренний")
+  Container(bidding, "Сервис ставок", "gRPC, stateless", "Взвешивание ставок, победитель")
+  ContainerDb(redisBid, "Redis (read-model)", "In-memory KV", "Кампании, бюджеты, ставки")
+}
+
+Container(campaigns, "Сервис кампаний", "REST", "CRUD кампаний/бюджетов/ставок")
+ContainerDb(pgCamp, "PostgreSQL (Master-Slave)", "OLTP", "Source of truth конфигурации")
+
+Container(delivery, "Delivery Service", "Node.js", "HTML/JS-разметка")
+
+Container(stats, "Сервис статистики", "consumer", "Батч-запись событий")
+ContainerDb(pgStats, "PostgreSQL (шардирован по campaign_id)", "Append, партиции по времени", "События показов/кликов")
+
+Container(analytics, "Сервис аналитики", "REST", "Тяжёлые отчёты")
+ContainerDb(pgAna, "PostgreSQL read-replica(s)", "Read-оптимизирован", "Отчётность")
+
+Container(financial, "Сервис финансов", "REST, idempotent", "Списания, счета, балансы")
+ContainerDb(pgFin, "PostgreSQL (Master-Slave, sync)", "ACID OLTP", "Транзакции и балансы")
+
+ContainerQueue(kafka, "Kafka", "auction-events, ad-events, campaign-changes", "Буфер")
+
+' ====================== Связи ======================
+Rel(dsp, gateway, "Bid request", "HTTPS/OpenRTB")
+Rel(gateway, adServer, "Внешний трафик", "HTTP")
+Rel(adServer, bidding, "EvaluateAuction", "gRPC")
+Rel(bidding, redisBid, "Читает read-model", "sync, in-memory")
+Rel(bidding, kafka, "AuctionEvent", "async")
+
+Rel(advertiser, campaigns, "Управление кампаниями", "REST")
+Rel(campaigns, pgCamp, "CRUD", "SQL")
+Rel(campaigns, kafka, "campaign-changes", "async")
+Rel(kafka, redisBid, "Обновление кэша (CQRS read-model)", "consumer bidding-cache")
+Rel(bidding, campaigns, "Прогрев read-model при старте (cache warming, readiness gate)", "REST/gRPC")
+
+Rel(kafka, delivery, "auction-events (победитель)", "consumer delivery")
+Rel(delivery, endUser, "Отдаёт баннер", "HTTPS")
+Rel(endUser, delivery, "Показы / клики", "HTTPS")
+Rel(delivery, kafka, "ad-events", "async")
+Rel(kafka, stats, "auction-events / ad-events", "consumer")
+Rel(stats, pgStats, "Батч-запись", "SQL")
+
+Rel(kafka, analytics, "auction-events / ad-events", "consumer")
+Rel(pgStats, pgAna, "Репликация", "replica")
+Rel(pgCamp, pgAna, "Репликация", "replica")
+Rel(analytics, pgAna, "Read-запросы", "SQL")
+
+Rel(financial, pgFin, "Транзакции", "SQL")
+
+legend right
+  Database per Service:
+  Ставки — Redis read-model (без своей БД)
+  Кампании / Финансы — PostgreSQL Master-Slave (OLTP)
+  Статистика — PostgreSQL шардированный (write)
+  Аналитика — PostgreSQL read-replica (read)
+  Delivery — без своей БД (stateless), только Kafka + HTTPS
+  Kafka — буфер
+endlegend
+
+@enduml
