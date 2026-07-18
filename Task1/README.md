@@ -12,3 +12,4 @@
 | [`TO-BE.md`](TO-BE.md) | Целевая архитектура: decision matrix, рекомендуемый подход (модульный монолит + выделение сервисов через Strangler Fig) и план эволюции к микросервисам. |
 | [`adr/ADR-001.md`](adr/ADR-001.md) | Architecture Decision Record: выбор стратегии эволюции архитектуры от монолита к микросервисам с рассмотренными альтернативами. |
 | [`diagrams/AS-IS.puml`](diagrams/AS-IS.puml) | Диаграмма C4 (Container) текущего состояния системы в формате PlantUML. |
+| [`diagrams/TO-BE.puml`](diagrams/TO-BE.puml) | Диаграмма C4 (Container) целевой архитектуры (через год) в формате PlantUML: микросервисы с обоснованием границ, инфраструктура (API Gateway, Kafka, Redis) и Database per Service. |
