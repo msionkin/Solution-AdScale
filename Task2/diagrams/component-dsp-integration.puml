@@ -1,0 +1,67 @@
+@startuml
+!include https://raw.githubusercontent.com/plantuml-stdlib/C4-PlantUML/master/C4_Component.puml
+
+LAYOUT_WITH_LEGEND()
+
+title Component — интеграция API Gateway и Bidding Service с DSP и Kafka (TO-BE)
+
+Person_Ext(dsp, "DSP-партнёр", "OpenRTB / HTTPS / JSON")
+
+System_Boundary(gw_b, "API Gateway (NGINX + Lua)") {
+  Component(auth, "Аутентификация", "", "Проверка API-ключа партнёра")
+  Component(rl, "Rate Limiting", "Lua", "Глобальный лимит на upstream, 429 + Retry-After")
+  Component(cb, "Circuit Breaker", "Lua / NGINX Plus health checks", "OPEN → no-bid, half-open восстановление")
+  Component(route, "Маршрутизация", "NGINX", "POST /v1/openrtb2/bid → пул внешнего трафика")
+  Component(metrics, "Метрики", "p50/p95/p99, error rate", "Срез latency на границе")
+}
+
+Container(adServer, "Ad Server", "C++/Go", "Отдельный пул для внешнего DSP-трафика")
+
+System_Boundary(bid_b, "Bidding Service (gRPC, stateless)") {
+  Component(evalRpc, "EvaluateAuction", "gRPC (protobuf)", "Взвешивание ставок, победитель, цена")
+  Component(healthRpc, "HealthCheck", "gRPC", "readiness/liveness для CB")
+  Component(cacheConsumer, "Consumer campaign-changes", "consumer-group bidding-cache", "Обновление/инвалидация read-model")
+  Component(producer, "Producer auction-events", "async, Avro", "Публикация AuctionEvent")
+}
+ContainerDb(redisBid, "Redis (read-model)", "In-memory KV", "Кампании, бюджеты, ставки")
+
+Container(campaigns, "Сервис кампаний", "REST", "Source of truth конфигурации")
+ContainerQueue(kafka, "Kafka", "auction-events, campaign-changes", "Буфер")
+
+' --- Downstream-потребители auction-events (участвуют через Kafka) ---
+Container(delivery, "Delivery Service", "consumer delivery", "HTML/JS-разметка")
+Container(stats, "Сервис статистики", "consumer statistics", "Батч-запись в PostgreSQL")
+Container(analytics, "Сервис аналитики", "consumer analytics", "Отчётность")
+
+' ====================== Связи ======================
+Rel(dsp, auth, "Bid request + API-key", "HTTPS/OpenRTB")
+Rel(auth, rl, "Прошедший аутентификацию запрос")
+Rel(rl, cb, "В пределах лимита")
+Rel(cb, route, "CB closed → на upstream")
+Rel(cb, dsp, "CB open → no-bid", "HTTPS")
+Rel(route, adServer, "Проксирование", "HTTP")
+Rel(healthRpc, cb, "Health-статус для решения CB", "gRPC")
+
+Rel(adServer, evalRpc, "EvaluateAuction", "gRPC")
+Rel(evalRpc, redisBid, "Чтение read-model", "sync, in-memory")
+Rel(evalRpc, producer, "Результат аукциона")
+Rel(producer, kafka, "AuctionEvent → auction-events", "async")
+Rel(evalRpc, adServer, "AuctionResponse (winner, price)", "gRPC")
+
+Rel(campaigns, kafka, "campaign-changes", "async")
+Rel(kafka, cacheConsumer, "campaign-changes", "consumer bidding-cache")
+Rel(cacheConsumer, redisBid, "Обновление read-model (CQRS)")
+Rel(campaigns, cacheConsumer, "Прогрев read-model при старте (readiness gate)", "REST/gRPC")
+
+Rel(kafka, delivery, "auction-events (победитель)", "consumer")
+Rel(kafka, stats, "auction-events", "consumer")
+Rel(kafka, analytics, "auction-events", "consumer")
+
+legend right
+  Фокус: интеграция API Gateway ↔ Bidding Service с DSP и Kafka
+  Синхронный hot path: DSP → Gateway → Ad Server → Bidding → Redis
+  Асинхронно: Bidding → Kafka (auction-events), Campaigns → Kafka → Bidding (campaign-changes)
+  Circuit Breaker использует HealthCheck Bidding Service
+endlegend
+
+@enduml
