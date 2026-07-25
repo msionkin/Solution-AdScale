@@ -16,6 +16,7 @@ System_Boundary(gw_b, "API Gateway (NGINX + Lua)") {
 }
 
 Container(adServer, "Ad Server", "C++/Go", "Отдельный пул для внешнего DSP-трафика")
+Component(cbBid, "Circuit Breaker (gRPC-клиент)", "на стороне Ad Server", "OPEN → no-bid (fail-fast), half-open по HealthCheck")
 
 System_Boundary(bid_b, "Bidding Service (gRPC, stateless)") {
   Component(evalRpc, "EvaluateAuction", "gRPC (protobuf)", "Взвешивание ставок, победитель, цена")
@@ -42,7 +43,10 @@ Rel(cb, dsp, "CB open → no-bid", "HTTPS")
 Rel(route, adServer, "Проксирование", "HTTP")
 Rel(healthRpc, cb, "Health-статус для решения CB", "gRPC")
 
-Rel(adServer, evalRpc, "EvaluateAuction", "gRPC")
+Rel(adServer, cbBid, "EvaluateAuction (через CB)")
+Rel(cbBid, evalRpc, "CB closed → EvaluateAuction", "gRPC (deadline 30–40 мс)")
+Rel(cbBid, adServer, "CB open / таймаут → no-bid")
+Rel(healthRpc, cbBid, "Health-статус для решения CB", "gRPC")
 Rel(evalRpc, redisBid, "Чтение read-model", "sync, in-memory")
 Rel(evalRpc, producer, "Результат аукциона")
 Rel(producer, kafka, "AuctionEvent → auction-events", "async")
@@ -61,7 +65,7 @@ legend right
   Фокус: интеграция API Gateway ↔ Bidding Service с DSP и Kafka
   Синхронный hot path: DSP → Gateway → Ad Server → Bidding → Redis
   Асинхронно: Bidding → Kafka (auction-events), Campaigns → Kafka → Bidding (campaign-changes)
-  Circuit Breaker использует HealthCheck Bidding Service
+  Circuit Breaker на двух уровнях: Gateway→Ad Server и Ad Server→Bidding (gRPC-клиент); оба используют HealthCheck Bidding Service
 endlegend
 
 @enduml

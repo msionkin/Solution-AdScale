@@ -9,6 +9,7 @@
 | `interaction.md`     | Протоколы и паттерны взаимодействия между компонентами: где используется gRPC, REST, Kafka, HTTPS; какие связи синхронные, а какие асинхронные, и обоснование каждого выбора.                                                                                             |
 | `bidding-service.md` | Спецификация `Bidding Service` — выделенного из монолита движка ставок (бывший `Auction Engine`). Границы и зависимости сервиса, стратегия выделения (Strangler Fig), gRPC-контракт (`bidding.proto`), требования к stateless-масштабированию и изоляции критичного пути. |
 | `api-gateway.md`     | Спецификация API Gateway (NGINX + Lua) как единой точки входа для трафика DSP-партнёра: приём OpenRTB-запросов, аутентификация, rate limiting, circuit breaker, метрики latency и error rate.                                                                             |
+| `reliability.md`     | Паттерны надёжности: Circuit Breaker на границе и между сервисами (Ad Server→Bidding), таймауты и deadline propagation, retry (backoff + jitter), идемпотентность Financial, failover-стратегия по компонентам, fallback `no-bid`.                                        |
 | `diagrams/`          | PlantUML-диаграммы, иллюстрирующие спецификации.                                                                                                                                                                                                                          |
 
 ## Диаграммы
