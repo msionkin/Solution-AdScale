@@ -1,0 +1,127 @@
+@startuml
+!include https://raw.githubusercontent.com/plantuml-stdlib/C4-PlantUML/master/C4_Container.puml
+
+LAYOUT_WITH_LEGEND()
+
+title C4 Container Diagram — AdScale (TO-BE, целевая архитектура через год: микросервисы + событийная обработка, 50 000 RPS, SLA 99,9%)
+
+' ====================== Акторы и внешние системы ======================
+Person(advertiser, "Рекламодатель", "Управляет кампаниями, бюджетами и ставками")
+Person_Ext(endUser, "Пользователь сайта/приложения", "Смотрит баннер, кликает")
+System_Ext(dspPartner, "DSP-партнёр", "Bid requests/responses по OpenRTB, SLA ≤ 80 мс")
+System_Ext(paymentGateway, "Платёжный шлюз", "Пополнение рекламных бюджетов")
+
+' ====================== Инфраструктура на границе ======================
+Container(gateway, "API Gateway", "NGINX + Lua", "Единая точка входа DSP-трафика: аутентификация по API-key, rate limiting, circuit breaker, метрики p50/p95/p99")
+
+' ====================== Критичный путь (hot path, синхронный) ======================
+System_Boundary(hotpath, "Критичный путь аукциона (hot path, ≤ 80 мс)") {
+  Container(adServer, "Ad Server", "C++ / Go", "Приём OpenRTB, идентификация пользователя, подбор кандидатов, OpenRTB→внутренний формат")
+  Container(bidding, "Сервис ставок (Bidding)", "C++ / gRPC, stateless", "Взвешивание ставок, определение победителя и цены. Своей БД нет — читает только Redis read-model")
+  ContainerDb(redisBid, "Redis", "In-memory KV (read-model)", "Кампании, бюджеты, ставки. Рядом с Bidding для мин. задержки")
+}
+
+' ====================== Конфигурация кампаний (write-сторона / source of truth) ======================
+Container(campaigns, "Сервис кампаний (Campaigns)", "Go / REST", "Source of truth кампаний, бюджетов, ставок. CQRS command-сторона, прогрев read-model")
+ContainerDb(pgCamp, "PostgreSQL", "OLTP, Master–Slave (async)", "Конфигурация кампаний/бюджетов/ставок")
+
+' ====================== Выдача рекламы (stateless) ======================
+Container(delivery, "Delivery Service", "Node.js, stateless", "Отложенная генерация HTML/JS-разметки баннера. Своей БД нет")
+
+' ====================== Статистика (write-heavy) ======================
+Container(stats, "Сервис статистики (Statistics)", "Python, Kafka consumer", "Батч-запись событий показов/кликов, без синхронных вызовов")
+ContainerDb(pgStats, "PostgreSQL", "Шардирование по campaign_id, партиции по времени, Master–Slave", "Append-only события показов/кликов")
+
+' ====================== Аналитика (read-heavy) ======================
+Container(analytics, "Сервис аналитики (Analytics)", "Python / REST", "Тяжёлые OLAP-отчёты только по репликам")
+ContainerDb(pgAna, "PostgreSQL", "Read-replica(s)", "Отчётность (производные данные)")
+
+' ====================== Финансы (ACID) ======================
+Container(financial, "Сервис финансов (Financial)", "Go / REST, idempotent", "Списания, счета, балансы. Идемпотентность по ключу")
+ContainerDb(pgFin, "PostgreSQL", "ACID OLTP, Master–Slave (sync), авто-failover", "Транзакции и балансы")
+
+' ====================== UI ======================
+Container(dashboard, "Advertiser Dashboard", "Node.js + JavaScript", "Web UI: кампании, отчётность, финансы. Своей БД нет")
+
+' ====================== Брокер событий ======================
+ContainerQueue(kafka, "Kafka", "Event Streaming (Avro)", "Топики: auction-events, ad-events, campaign-changes.")
+
+' ====================== Связи: внешние и синхронный hot path ======================
+Rel(dspPartner, gateway, "Bid requests / responses", "HTTPS / OpenRTB")
+Rel(gateway, adServer, "Проксирование внешнего трафика (отд. пул)", "HTTP")
+Rel(adServer, bidding, "EvaluateAuction (кандидаты)", "gRPC")
+Rel(bidding, redisBid, "Читает read-model", "sync, in-memory")
+Rel(bidding, adServer, "Победитель и цена", "gRPC")
+
+' ====================== Связи: конфигурация и CQRS ======================
+Rel(advertiser, dashboard, "Управляет кампаниями и бюджетами", "HTTPS")
+Rel(dashboard, campaigns, "CRUD кампаний/бюджетов/ставок", "REST")
+Rel(dashboard, financial, "Управление балансом", "REST")
+Rel(dashboard, analytics, "Запросы отчётности", "REST")
+Rel(dashboard, paymentGateway, "Пополнение бюджета", "HTTPS / REST")
+Rel(campaigns, pgCamp, "CRUD", "SQL")
+Rel(campaigns, kafka, "Публикует campaign-changes", "async / Avro")
+Rel(kafka, redisBid, "Обновление / инвалидация read-model (consumer bidding-cache)", "async")
+Rel(bidding, campaigns, "Прогрев read-model при старте (readiness gate)", "REST/gRPC")
+
+' ====================== Связи: событийный поток (async) ======================
+Rel(bidding, kafka, "AuctionEvent → auction-events", "async / Avro")
+Rel(kafka, delivery, "auction-events (победитель)", "consumer delivery")
+Rel(delivery, endUser, "Отдаёт баннер", "HTTPS")
+Rel(endUser, delivery, "Показы / клики", "HTTPS")
+Rel(delivery, kafka, "Публикует ad-events", "async / Avro")
+Rel(kafka, stats, "auction-events / ad-events", "consumer statistics")
+Rel(stats, pgStats, "Батч-запись", "SQL")
+Rel(kafka, analytics, "auction-events / ad-events", "consumer analytics")
+
+' ====================== Связи: репликация в read-контур аналитики ======================
+Rel(pgStats, pgAna, "Репликация", "replica")
+Rel(pgCamp, pgAna, "Репликация", "replica")
+Rel(analytics, pgAna, "Read-запросы", "SQL")
+
+' ====================== Связи: финансы ======================
+Rel(financial, pgFin, "Транзакции и балансы", "SQL")
+
+' ====================== Обоснование границ сервисов ======================
+note right of bidding
+  **Изоляция критичного пути**
+  Самый чувствительный к latency узел.
+  Stateless + свой пул ресурсов + Redis
+  read-model → независимое гориз.
+  масштабирование под 50 000 RPS,
+  нет синхронных вызовов в Postgres
+end note
+
+note right of campaigns
+  **Source of truth конфигурации**
+  Связные данные (рекламодатель→кампания
+  →объявление).
+  CQRS: write здесь, read — в Redis Bidding
+end note
+
+note bottom of stats
+  **Write-heavy поток событий**
+  Отдельный инстанс + шардирование
+  убирают конкуренцию записи с OLTP
+end note
+
+note bottom of financial
+  **ACID для финансовых операций**
+  Строгие транзакции, идемпотентность,
+  синхронная реплика — изоляция от
+  аналитики/статистики
+end note
+
+' ====================== Легенда ======================
+legend right
+  **Целевая архитектура (через год)**
+  Стиль: микросервисы + событийная обработка (Kafka), Database per Service
+  <#2E8B57> Синхронный hot path: DSP → Gateway → Ad Server → Bidding → Redis (≤ 80 мс)
+  <#4682B4> Асинхронно (Kafka): auction-events, ad-events, campaign-changes
+  Инфраструктура: API Gateway (NGINX+Lua), Kafka (RF≥3), Redis (read-model)
+  БД по сервисам: Campaigns/Financial — Master–Slave OLTP; Statistics — шардированный write;
+  Analytics — read-replica; Bidding/Delivery/Dashboard — без своей БД
+  Полная контейнеризация и оркестрация, авто-деплой, мультирегион → SLA 99,9%, 50 000 RPS
+endlegend
+
+@enduml

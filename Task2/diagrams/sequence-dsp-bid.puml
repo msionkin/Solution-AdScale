@@ -1,0 +1,44 @@
+@startuml
+title Sequence — обработка bid-запроса DSP: API Gateway → Bidding Service → Kafka
+
+actor "DSP-партнёр" as dsp
+participant "API Gateway" as gw
+participant "Ad Server" as ad
+participant "Bidding Service" as bid
+database "Redis\n(read-model кампаний/ставок)" as redis
+queue "Kafka\n(auction-events)" as kafka
+
+'== Приём запроса и защита на границе с DSP ==
+
+dsp -> gw : Bid request (OpenRTB), API-ключ в заголовке
+
+alt Ключ неверный / лимит превышен / Circuit Breaker OPEN
+  gw --> dsp : 401 / 429 / no-bid
+end
+
+'== Критичный путь аукциона ==
+
+gw -> ad : Проксирование запроса
+note right of ad : Подготовка аукциона, подбор кандидатов
+
+ad -> bid : EvaluateAuction(AuctionRequest)
+bid -> redis : Чтение кампаний и ставок
+redis --> bid : Кандидаты
+note right of bid : Определение победителя и цены
+bid --> ad : AuctionResponse (winner, price)
+
+'== Публикация результата (вне hot path) ==
+
+bid ->> kafka : AuctionEvent (async)
+note right of kafka : Читают Delivery, Статистика, Аналитика
+
+'== Ответ партнёру ==
+
+ad --> gw : Bid response
+gw --> dsp : 200 OK / bid response (OpenRTB)
+
+alt Ad Server / Bidding Service — ошибка или таймаут
+  gw --> dsp : no-bid
+end
+
+@enduml
