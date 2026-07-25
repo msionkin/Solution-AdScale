@@ -22,5 +22,3 @@
 - `analytics` — наполнение аналитического/отчётного контура.
 - `delivery` — генерация HTML/JS-разметки по `auction-events`.
 - `bidding-cache` — применение `campaign-changes` к Redis read-model.
-
-См. диаграмму `diagrams/event-streaming.puml`.

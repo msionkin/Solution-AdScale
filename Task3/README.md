@@ -11,4 +11,5 @@
 | [`caching.md`](caching.md) | Кэширование в Redis: read-model Сервиса ставок, TTL и событийная инвалидация, прогрев кэша (cache warming) |
 | [`event-streaming.md`](event-streaming.md) | Потоковая обработка событий в Kafka: топики, группы потребителей, схема событий (Avro) и развязка критичного пути от write-нагрузки статистики/аналитики. |
 | [`scaling.md`](scaling.md) | Масштабирование БД: репликация Master–Slave, шардирование Сервиса статистики, read-replicas для аналитики и применение CQRS. |
+| [`fault-tolerance.md`](fault-tolerance.md) | Отказоустойчивость данных: RPO/RTO по сервисам, стратегия резервного копирования, DR-план (мультирегион, сценарии отказа) и проверка на соответствие 12-факторной методологии. |
 | [`diagrams/data-architecture.puml`](diagrams/data-architecture.puml) | Диаграмма архитектуры данных в формате PlantUML: хранилища по сервисам, потоки Kafka, Redis read-model и репликация. |
